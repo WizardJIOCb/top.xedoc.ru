@@ -88,6 +88,15 @@ app.get("*", (req, res, next) => {
 });
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (isBodyParserError(err)) {
+    const status = err.status >= 400 && err.status < 500 ? err.status : 400;
+    res.status(status).json({
+      error: err.type === "entity.too.large" ? "payload_too_large" : "invalid_json",
+      message: err.type === "entity.too.large" ? "Request body is too large." : "Request body must be valid JSON."
+    });
+    return;
+  }
+
   if (err instanceof ZodError) {
     res.status(400).json({
       error: "validation_failed",
@@ -158,4 +167,17 @@ function createRateLimiter({ windowMs, max }: { windowMs: number; max: number })
     current.count += 1;
     next();
   };
+}
+
+function isBodyParserError(error: unknown): error is { status: number; type?: string } {
+  return (
+    isRecord(error) &&
+    typeof error.status === "number" &&
+    typeof error.type === "string" &&
+    error.type.startsWith("entity.")
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

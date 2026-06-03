@@ -409,12 +409,14 @@ td small {
 }
 
 .panel-heading span {
-  max-width: 130px;
+  max-width: 220px;
   overflow: hidden;
   color: #667085;
   font-size: 12px;
+  line-height: 1.25;
+  text-align: right;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .profile-panel {

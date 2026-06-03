@@ -69,6 +69,17 @@ type ConnectorFormState = {
 
 type SnippetProvider = "openai" | "xai" | "gemini";
 
+type ApiIssue = {
+  path?: string;
+  message?: string;
+};
+
+type ApiErrorPayload = {
+  error?: string;
+  message?: string;
+  issues?: ApiIssue[];
+};
+
 type RefreshOptions = {
   nextProvider?: Provider | "all";
   nextSort?: SortKey;
@@ -98,6 +109,15 @@ const defaultConnectorForm: ConnectorFormState = {
   adminApiKey: "",
   googleProjectId: "",
   googleAccessToken: ""
+};
+
+const apiFieldLabels: Record<string, string> = {
+  adminApiKey: "Admin key",
+  displayName: "имя",
+  fingerprint: "отпечаток",
+  googleAccessToken: "OAuth token",
+  googleProjectId: "project id",
+  proofUrl: "proof URL"
 };
 
 export function App() {
@@ -174,25 +194,31 @@ export function App() {
       return;
     }
 
+    const localValidationError = validateConnectorForm(connectorForm, profile);
+    if (localValidationError) {
+      setStatus(localValidationError);
+      return;
+    }
+
     const basePayload = {
       fingerprint,
       displayName,
-      team: profile.team,
+      team: cleanOptional(profile.team),
       period: profile.period,
-      proofUrl: profile.proofUrl
+      proofUrl: cleanOptional(profile.proofUrl)
     };
     const payload =
       connectorForm.connector === "openai-admin"
         ? {
             ...basePayload,
             connector: "openai-admin",
-            adminApiKey: connectorForm.adminApiKey
+            adminApiKey: connectorForm.adminApiKey.trim()
           }
         : {
             ...basePayload,
             connector: "gemini-monitoring",
-            googleProjectId: connectorForm.googleProjectId,
-            googleAccessToken: connectorForm.googleAccessToken
+            googleProjectId: connectorForm.googleProjectId.trim(),
+            googleAccessToken: connectorForm.googleAccessToken.trim()
           };
 
     setIsLoading(true);
@@ -206,7 +232,7 @@ export function App() {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
-        setStatus(error?.message ?? "Коннектор не ответил");
+        setStatus(formatApiError(error, response.status));
         return;
       }
 
@@ -378,119 +404,121 @@ export function App() {
             <span>{status}</span>
           </div>
 
-          <div className="profile-panel">
-            <label>
-              <span>имя</span>
-              <input
-                required
-                minLength={2}
-                maxLength={40}
-                value={profile.displayName}
-                onChange={(event) => setProfileValue("displayName", event.target.value)}
-                placeholder="Wizard"
-              />
-            </label>
-            <label>
-              <span>команда</span>
-              <input
-                maxLength={40}
-                value={profile.team}
-                onChange={(event) => setProfileValue("team", event.target.value)}
-                placeholder="xedoc"
-              />
-            </label>
-            <div className="form-grid">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleConnectorMeasure();
+            }}
+          >
+            <div className="profile-panel">
               <label>
-                <span>период</span>
-                <select value={profile.period} onChange={(event) => setProfileValue("period", event.target.value as WindowKey)}>
-                  {windows.map((item) => (
-                    <option key={item} value={item}>
-                      {windowLabels[item]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>proof URL</span>
+                <span>имя</span>
                 <input
-                  maxLength={500}
-                  value={profile.proofUrl}
-                  onChange={(event) => setProfileValue("proofUrl", event.target.value)}
-                  placeholder="https://..."
+                  required
+                  minLength={2}
+                  maxLength={40}
+                  value={profile.displayName}
+                  onChange={(event) => setProfileValue("displayName", event.target.value)}
+                  placeholder="Wizard"
                 />
               </label>
-            </div>
-          </div>
-
-          <div className="connector-panel">
-            <div className="connector-heading">
-              <Gauge size={18} aria-hidden="true" />
-              <h3>Агрегатный замер</h3>
-            </div>
-            <div className="connector-tabs" aria-label="Коннектор">
-              <button
-                type="button"
-                className={connectorForm.connector === "openai-admin" ? "active" : ""}
-                onClick={() => setConnectorValue("connector", "openai-admin")}
-              >
-                OpenAI
-              </button>
-              <button
-                type="button"
-                className={connectorForm.connector === "gemini-monitoring" ? "active" : ""}
-                onClick={() => setConnectorValue("connector", "gemini-monitoring")}
-              >
-                Gemini
-              </button>
-            </div>
-
-            {connectorForm.connector === "openai-admin" && (
               <label>
-                <span>OpenAI Admin API key</span>
+                <span>команда</span>
                 <input
-                  type="password"
-                  autoComplete="off"
-                  value={connectorForm.adminApiKey}
-                  onChange={(event) => setConnectorValue("adminApiKey", event.target.value)}
-                  placeholder="sk-admin-..."
+                  maxLength={40}
+                  value={profile.team}
+                  onChange={(event) => setProfileValue("team", event.target.value)}
+                  placeholder="xedoc"
                 />
               </label>
-            )}
-
-            {connectorForm.connector === "gemini-monitoring" && (
-              <>
+              <div className="form-grid">
                 <label>
-                  <span>Google project id</span>
+                  <span>период</span>
+                  <select value={profile.period} onChange={(event) => setProfileValue("period", event.target.value as WindowKey)}>
+                    {windows.map((item) => (
+                      <option key={item} value={item}>
+                        {windowLabels[item]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>proof URL</span>
                   <input
-                    autoComplete="off"
-                    value={connectorForm.googleProjectId}
-                    onChange={(event) => setConnectorValue("googleProjectId", event.target.value)}
-                    placeholder="my-gemini-project"
+                    maxLength={500}
+                    value={profile.proofUrl}
+                    onChange={(event) => setProfileValue("proofUrl", event.target.value)}
+                    placeholder="https://..."
                   />
                 </label>
-                <label>
-                  <span>OAuth access token</span>
-                  <textarea
-                    className="secret-textarea"
-                    autoComplete="off"
-                    value={connectorForm.googleAccessToken}
-                    onChange={(event) => setConnectorValue("googleAccessToken", event.target.value)}
-                    placeholder="ya29..."
-                  />
-                </label>
-              </>
-            )}
+              </div>
+            </div>
 
-            <button
-              className="measure-submit-button"
-              type="button"
-              onClick={handleConnectorMeasure}
-              disabled={isLoading}
-            >
-              <Gauge size={17} aria-hidden="true" />
-              Запросить usage
-            </button>
-          </div>
+            <div className="connector-panel">
+              <div className="connector-heading">
+                <Gauge size={18} aria-hidden="true" />
+                <h3>Агрегатный замер</h3>
+              </div>
+              <div className="connector-tabs" aria-label="Коннектор">
+                <button
+                  type="button"
+                  className={connectorForm.connector === "openai-admin" ? "active" : ""}
+                  onClick={() => setConnectorValue("connector", "openai-admin")}
+                >
+                  OpenAI
+                </button>
+                <button
+                  type="button"
+                  className={connectorForm.connector === "gemini-monitoring" ? "active" : ""}
+                  onClick={() => setConnectorValue("connector", "gemini-monitoring")}
+                >
+                  Gemini
+                </button>
+              </div>
+
+              {connectorForm.connector === "openai-admin" && (
+                <label>
+                  <span>OpenAI Admin API key</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={connectorForm.adminApiKey}
+                    onChange={(event) => setConnectorValue("adminApiKey", event.target.value)}
+                    placeholder="sk-admin-..."
+                  />
+                </label>
+              )}
+
+              {connectorForm.connector === "gemini-monitoring" && (
+                <>
+                  <label>
+                    <span>Google project id</span>
+                    <input
+                      autoComplete="off"
+                      value={connectorForm.googleProjectId}
+                      onChange={(event) => setConnectorValue("googleProjectId", event.target.value)}
+                      placeholder="my-gemini-project"
+                    />
+                  </label>
+                  <label>
+                    <span>OAuth access token</span>
+                    <textarea
+                      className="secret-textarea"
+                      autoComplete="off"
+                      value={connectorForm.googleAccessToken}
+                      onChange={(event) => setConnectorValue("googleAccessToken", event.target.value)}
+                      placeholder="ya29..."
+                    />
+                  </label>
+                </>
+              )}
+
+              <button className="measure-submit-button" type="submit" disabled={isLoading}>
+                <Gauge size={17} aria-hidden="true" />
+                Запросить usage
+              </button>
+            </div>
+          </form>
         </aside>
       </section>
 
@@ -608,6 +636,70 @@ function saveProfile(profile: ProfileState) {
       period: profile.period
     })
   );
+}
+
+function validateConnectorForm(connectorForm: ConnectorFormState, profile: ProfileState) {
+  const proofUrl = profile.proofUrl.trim();
+  if (proofUrl && !isCompleteUrl(proofUrl)) return "Proof URL неверный";
+
+  if (connectorForm.connector === "openai-admin") {
+    if (connectorForm.adminApiKey.trim().length < 16) return "Нужен Admin key";
+    return null;
+  }
+
+  if (connectorForm.googleProjectId.trim().length < 3) return "Нужен project id";
+  if (connectorForm.googleAccessToken.trim().length < 16) return "Нужен OAuth token";
+  return null;
+}
+
+function cleanOptional(value: string) {
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function formatApiError(error: unknown, status: number) {
+  const payload = parseApiError(error);
+
+  if (payload?.error === "validation_failed") {
+    const issue = payload.issues?.[0];
+    const field = issue?.path ? apiFieldLabels[issue.path] ?? issue.path : "payload";
+    return `Проверь ${field}`;
+  }
+
+  if (payload?.error === "connector_failed") return status === 401 ? "Ключ отклонен" : "Провайдер не ответил";
+  if (payload?.error === "no_usage") return "Usage не найден";
+  if (status === 429) return "Слишком часто";
+  if (status >= 500) return "Сервер не ответил";
+  return payload?.message ?? "Коннектор не ответил";
+}
+
+function parseApiError(error: unknown): ApiErrorPayload | null {
+  if (!isRecord(error)) return null;
+  const issues = Array.isArray(error.issues)
+    ? error.issues.filter(isRecord).map((issue) => ({
+        path: typeof issue.path === "string" ? issue.path : undefined,
+        message: typeof issue.message === "string" ? issue.message : undefined
+      }))
+    : undefined;
+
+  return {
+    error: typeof error.error === "string" ? error.error : undefined,
+    message: typeof error.message === "string" ? error.message : undefined,
+    issues
+  };
+}
+
+function isCompleteUrl(value: string) {
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function buildSnippets({
