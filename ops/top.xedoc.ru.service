@@ -1,0 +1,19 @@
+[Unit]
+Description=top.xedoc.ru leaderboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/www/top.xedoc.ru/current
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=4177
+Environment=DATA_DIR=/var/www/top.xedoc.ru/data
+ExecStart=/usr/bin/node dist/server/index.js
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
