@@ -76,6 +76,17 @@ type FormState = {
   proofUrl: string;
 };
 
+type ConnectorKind = "openai-admin" | "gemini-monitoring" | "xai-response";
+
+type ConnectorFormState = {
+  connector: ConnectorKind;
+  adminApiKey: string;
+  googleProjectId: string;
+  googleAccessToken: string;
+  xaiModel: string;
+  xaiUsage: string;
+};
+
 type RefreshOptions = {
   nextProvider?: Provider | "all";
   nextSort?: SortKey;
@@ -113,6 +124,15 @@ const defaultForm: FormState = {
   proofUrl: ""
 };
 
+const defaultConnectorForm: ConnectorFormState = {
+  connector: "openai-admin",
+  adminApiKey: "",
+  googleProjectId: "",
+  googleAccessToken: "",
+  xaiModel: "",
+  xaiUsage: ""
+};
+
 export function App() {
   const [fingerprint, setFingerprint] = useState("");
   const [windowKey, setWindowKey] = useState<WindowKey>("day");
@@ -121,6 +141,7 @@ export function App() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [form, setForm] = useState<FormState>(defaultForm);
+  const [connectorForm, setConnectorForm] = useState<ConnectorFormState>(defaultConnectorForm);
   const [quickText, setQuickText] = useState("");
   const [status, setStatus] = useState("Готово");
   const [isLoading, setIsLoading] = useState(false);
@@ -202,6 +223,98 @@ export function App() {
       await saveParsedUsage(text);
     } catch {
       setStatus("Вставь снимок ниже");
+    }
+  }
+
+  async function handleConnectorMeasure() {
+    if (!fingerprint) {
+      setStatus("Нет отпечатка");
+      return;
+    }
+
+    const displayName = form.displayName.trim() || fallbackDisplayName(fingerprint);
+    const basePayload = {
+      fingerprint,
+      displayName,
+      team: form.team,
+      period: form.period,
+      proofUrl: form.proofUrl
+    };
+    const payload =
+      connectorForm.connector === "openai-admin"
+        ? {
+            ...basePayload,
+            connector: "openai-admin",
+            adminApiKey: connectorForm.adminApiKey
+          }
+        : connectorForm.connector === "gemini-monitoring"
+          ? {
+              ...basePayload,
+              connector: "gemini-monitoring",
+              googleProjectId: connectorForm.googleProjectId,
+              googleAccessToken: connectorForm.googleAccessToken
+            }
+          : {
+              ...basePayload,
+              connector: "xai-response",
+              model: connectorForm.xaiModel,
+              usage: connectorForm.xaiUsage
+            };
+
+    setIsLoading(true);
+    setStatus("Меряю");
+    try {
+      const response = await fetch("/api/connectors/measure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        setStatus(error?.message ?? "Коннектор не ответил");
+        return;
+      }
+
+      const result = await response.json();
+      const measurement = result.measurement as {
+        provider: Provider;
+        period: WindowKey;
+        topModel?: string;
+        tokens: number;
+        requests: number;
+        spendUsd: number;
+        artifactBytes: number;
+        linesChanged: number;
+        sessions: number;
+        source: FormState["source"];
+      };
+
+      setForm((current) => ({
+        ...current,
+        displayName,
+        provider: measurement.provider,
+        period: measurement.period,
+        topModel: measurement.topModel ?? current.topModel,
+        tokens: metricToInput(measurement.tokens),
+        requests: metricToInput(measurement.requests),
+        spendUsd: metricToInput(measurement.spendUsd),
+        artifactMb: metricToInput(measurement.artifactBytes / 1_048_576),
+        linesChanged: metricToInput(measurement.linesChanged),
+        sessions: metricToInput(measurement.sessions),
+        source: measurement.source
+      }));
+      setWindowKey(measurement.period);
+      setProvider("all");
+      await refresh({
+        nextProvider: "all",
+        nextWindow: measurement.period,
+        successStatus: result.warnings?.[0] ? "Замер сохранён с пометкой" : "Замер сохранён"
+      });
+    } catch {
+      setStatus("Сеть не ответила");
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -441,6 +554,105 @@ export function App() {
             <span>{status}</span>
           </div>
 
+          <div className="connector-panel">
+            <div className="connector-heading">
+              <Gauge size={18} aria-hidden="true" />
+              <h3>Реальный замер</h3>
+            </div>
+            <div className="connector-tabs" aria-label="Коннектор">
+              <button
+                type="button"
+                className={connectorForm.connector === "openai-admin" ? "active" : ""}
+                onClick={() => setConnectorValue("connector", "openai-admin")}
+              >
+                OpenAI
+              </button>
+              <button
+                type="button"
+                className={connectorForm.connector === "gemini-monitoring" ? "active" : ""}
+                onClick={() => setConnectorValue("connector", "gemini-monitoring")}
+              >
+                Gemini
+              </button>
+              <button
+                type="button"
+                className={connectorForm.connector === "xai-response" ? "active" : ""}
+                onClick={() => setConnectorValue("connector", "xai-response")}
+              >
+                Grok
+              </button>
+            </div>
+
+            {connectorForm.connector === "openai-admin" && (
+              <label>
+                <span>OpenAI Admin API key</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={connectorForm.adminApiKey}
+                  onChange={(event) => setConnectorValue("adminApiKey", event.target.value)}
+                  placeholder="sk-admin-..."
+                />
+              </label>
+            )}
+
+            {connectorForm.connector === "gemini-monitoring" && (
+              <>
+                <label>
+                  <span>Google project id</span>
+                  <input
+                    autoComplete="off"
+                    value={connectorForm.googleProjectId}
+                    onChange={(event) => setConnectorValue("googleProjectId", event.target.value)}
+                    placeholder="my-gemini-project"
+                  />
+                </label>
+                <label>
+                  <span>OAuth access token</span>
+                  <textarea
+                    className="secret-textarea"
+                    autoComplete="off"
+                    value={connectorForm.googleAccessToken}
+                    onChange={(event) => setConnectorValue("googleAccessToken", event.target.value)}
+                    placeholder="ya29..."
+                  />
+                </label>
+              </>
+            )}
+
+            {connectorForm.connector === "xai-response" && (
+              <>
+                <label>
+                  <span>model</span>
+                  <input
+                    maxLength={80}
+                    value={connectorForm.xaiModel}
+                    onChange={(event) => setConnectorValue("xaiModel", event.target.value)}
+                    placeholder="grok-4.3"
+                  />
+                </label>
+                <label>
+                  <span>xAI usage JSON</span>
+                  <textarea
+                    value={connectorForm.xaiUsage}
+                    onChange={(event) => setConnectorValue("xaiUsage", event.target.value)}
+                    placeholder='{"prompt_tokens":199,"completion_tokens":1,"total_tokens":200,"cost_in_usd_ticks":158500}'
+                  />
+                </label>
+              </>
+            )}
+
+            <button
+              className="measure-submit-button"
+              type="button"
+              onClick={handleConnectorMeasure}
+              disabled={isLoading}
+            >
+              <Gauge size={17} aria-hidden="true" />
+              Запросить usage
+            </button>
+          </div>
+
           <div className="quick-import">
             <label>
               <span>быстрый импорт</span>
@@ -565,6 +777,13 @@ export function App() {
 
   function setFormValue<Key extends keyof FormState>(key: Key, value: FormState[Key]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function setConnectorValue<Key extends keyof ConnectorFormState>(
+    key: Key,
+    value: ConnectorFormState[Key]
+  ) {
+    setConnectorForm((current) => ({ ...current, [key]: value }));
   }
 }
 

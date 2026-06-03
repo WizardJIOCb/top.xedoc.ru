@@ -9,6 +9,11 @@ import {
   measurementInputSchema
 } from "../shared/schema.js";
 import {
+  ConnectorPublicError,
+  connectorMeasureSchema,
+  measureConnector
+} from "./connectors.js";
+import {
   appendMeasurement,
   buildLeaderboard,
   ensureStore,
@@ -28,6 +33,10 @@ const clientDist = process.env.CLIENT_DIST
 const postRateLimit = createRateLimiter({
   windowMs: 60_000,
   max: 20
+});
+const connectorRateLimit = createRateLimiter({
+  windowMs: 60_000,
+  max: 8
 });
 
 app.disable("x-powered-by");
@@ -59,6 +68,12 @@ app.post("/api/measurements", postRateLimit, asyncHandler(async (req, res) => {
   res.status(201).json({ ok: true, measurement: record });
 }));
 
+app.post("/api/connectors/measure", connectorRateLimit, asyncHandler(async (req, res) => {
+  const input = parseWithSchema(connectorMeasureSchema, req.body);
+  const result = await measureConnector(input);
+  res.status(201).json({ ok: true, ...result });
+}));
+
 app.use(express.static(clientDist, {
   extensions: ["html"],
   maxAge: "1h"
@@ -80,6 +95,14 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
         path: issue.path.join("."),
         message: issue.message
       }))
+    });
+    return;
+  }
+
+  if (err instanceof ConnectorPublicError) {
+    res.status(err.status).json({
+      error: err.code,
+      message: err.message
     });
     return;
   }

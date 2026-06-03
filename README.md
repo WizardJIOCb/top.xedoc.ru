@@ -37,6 +37,64 @@ Content-Type: application/json
 
 Все входящие payload/query/params валидируются через Zod. WebSocket в проекте не используется.
 
+## Реальные коннекторы
+
+```http
+POST /api/connectors/measure
+Content-Type: application/json
+```
+
+Секреты используются только для одного серверного запроса и не записываются в `measurements.jsonl`.
+
+### OpenAI Admin API
+
+Читает organization completions usage и costs по OpenAI Admin API key.
+
+```json
+{
+  "connector": "openai-admin",
+  "fingerprint": "public_browser_fingerprint",
+  "displayName": "Wizard",
+  "period": "month",
+  "adminApiKey": "sk-admin-..."
+}
+```
+
+### Gemini Monitoring
+
+Читает Gemini API quota token/request usage из Google Cloud Monitoring по OAuth access token с правом Monitoring read.
+
+```json
+{
+  "connector": "gemini-monitoring",
+  "fingerprint": "public_browser_fingerprint",
+  "displayName": "Wizard",
+  "period": "month",
+  "googleProjectId": "my-project",
+  "googleAccessToken": "ya29..."
+}
+```
+
+### xAI / Grok response usage
+
+xAI отдаёт usage и cost в каждом API response. Этот коннектор сохраняет такой usage object.
+
+```json
+{
+  "connector": "xai-response",
+  "fingerprint": "public_browser_fingerprint",
+  "displayName": "Wizard",
+  "period": "day",
+  "model": "grok-4.3",
+  "usage": {
+    "prompt_tokens": 199,
+    "completion_tokens": 1,
+    "total_tokens": 200,
+    "cost_in_usd_ticks": 158500
+  }
+}
+```
+
 ## Локально
 
 ```bash

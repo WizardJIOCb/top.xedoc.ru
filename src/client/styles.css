@@ -130,6 +130,7 @@ h2 {
 .icon-button,
 .icon-text-button,
 .measure-button,
+.measure-submit-button,
 .quick-button,
 .submit-button,
 .segmented button {
@@ -266,6 +267,7 @@ select:focus {
 
 .icon-text-button,
 .measure-button,
+.measure-submit-button,
 .quick-button,
 .submit-button {
   display: inline-flex;
@@ -423,6 +425,61 @@ td small {
   border-bottom: 1px solid #edf0f3;
 }
 
+.connector-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf0f3;
+}
+
+.connector-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.connector-heading svg {
+  color: #18a999;
+}
+
+h3 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.connector-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  min-height: 38px;
+  padding: 5px;
+  border: 1px solid #dfe4ea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.connector-tabs button {
+  min-width: 0;
+  border: 0;
+  border-radius: 7px;
+  color: #344054;
+  background: transparent;
+  font-weight: 800;
+}
+
+.connector-tabs button.active {
+  color: #ffffff;
+  background: #15171a;
+}
+
+.measure-submit-button {
+  width: 100%;
+  min-height: 42px;
+  background: #f2545b;
+}
+
 textarea {
   width: 100%;
   min-height: 86px;
@@ -435,6 +492,11 @@ textarea {
   font: inherit;
   font-size: 13px;
   outline: none;
+}
+
+.secret-textarea {
+  min-height: 64px;
+  -webkit-text-security: disc;
 }
 
 textarea:focus {
