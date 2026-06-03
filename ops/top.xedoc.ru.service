@@ -4,6 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
+User=topxedoc
+Group=topxedoc
 WorkingDirectory=/var/www/top.xedoc.ru/current
 Environment=NODE_ENV=production
 Environment=HOST=127.0.0.1
@@ -14,6 +16,9 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/www/top.xedoc.ru/data
 
 [Install]
 WantedBy=multi-user.target
