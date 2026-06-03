@@ -2,7 +2,6 @@ import {
   Activity,
   BarChart3,
   Clipboard,
-  ClipboardPaste,
   Coins,
   Fingerprint,
   Gauge,
@@ -10,14 +9,12 @@ import {
   Layers,
   LineChart,
   RefreshCw,
-  Send,
   Trophy,
   WalletCards
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
-  defaultWindowHours,
   providerLabels,
   type Provider,
   type SortKey,
@@ -36,14 +33,9 @@ type LeaderboardRow = {
   tokens: number;
   requests: number;
   spendUsd: number;
-  artifactBytes: number;
-  linesChanged: number;
-  sessions: number;
-  durationHours: number;
   tokensPerHour: number;
   requestsPerHour: number;
   avgTokensPerRequest: number;
-  artifactMb: number;
   lastSeen: string;
   sources: string[];
 };
@@ -57,35 +49,25 @@ type Stats = {
   measurements: number;
   fingerprints: number;
   latestUpdate?: string;
-  providers: Array<{ provider: Provider; count: number }>;
 };
 
-type FormState = {
+type ProfileState = {
   displayName: string;
   team: string;
-  provider: Provider;
   period: WindowKey;
-  topModel: string;
-  tokens: string;
-  requests: string;
-  spendUsd: string;
-  artifactMb: string;
-  linesChanged: string;
-  sessions: string;
-  source: "manual" | "api" | "oauth" | "import" | "codexbar";
   proofUrl: string;
 };
 
-type ConnectorKind = "openai-admin" | "gemini-monitoring" | "xai-response";
+type ConnectorKind = "openai-admin" | "gemini-monitoring";
 
 type ConnectorFormState = {
   connector: ConnectorKind;
   adminApiKey: string;
   googleProjectId: string;
   googleAccessToken: string;
-  xaiModel: string;
-  xaiUsage: string;
 };
+
+type SnippetProvider = "openai" | "xai" | "gemini";
 
 type RefreshOptions = {
   nextProvider?: Provider | "all";
@@ -101,26 +83,13 @@ const sorts: Array<{ key: SortKey; label: string }> = [
   { key: "tokensPerHour", label: "токены/час" },
   { key: "tokens", label: "токены" },
   { key: "spendUsd", label: "spend" },
-  { key: "requests", label: "requests" },
-  { key: "artifactBytes", label: "артефакты" },
-  { key: "linesChanged", label: "строки" },
-  { key: "sessions", label: "сессии" },
-  { key: "avgTokensPerRequest", label: "токены/request" }
+  { key: "requests", label: "requests" }
 ];
 
-const defaultForm: FormState = {
+const defaultProfile: ProfileState = {
   displayName: "",
   team: "",
-  provider: "codex",
   period: "day",
-  topModel: "",
-  tokens: "",
-  requests: "",
-  spendUsd: "",
-  artifactMb: "",
-  linesChanged: "",
-  sessions: "",
-  source: "manual",
   proofUrl: ""
 };
 
@@ -128,9 +97,7 @@ const defaultConnectorForm: ConnectorFormState = {
   connector: "openai-admin",
   adminApiKey: "",
   googleProjectId: "",
-  googleAccessToken: "",
-  xaiModel: "",
-  xaiUsage: ""
+  googleAccessToken: ""
 };
 
 export function App() {
@@ -140,9 +107,9 @@ export function App() {
   const [sort, setSort] = useState<SortKey>("tokensPerHour");
   const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [form, setForm] = useState<FormState>(defaultForm);
+  const [profile, setProfile] = useState<ProfileState>(defaultProfile);
   const [connectorForm, setConnectorForm] = useState<ConnectorFormState>(defaultConnectorForm);
-  const [quickText, setQuickText] = useState("");
+  const [snippetProvider, setSnippetProvider] = useState<SnippetProvider>("openai");
   const [status, setStatus] = useState("Готово");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -152,14 +119,12 @@ export function App() {
 
   useEffect(() => {
     const saved = loadProfile();
-    if (saved) {
-      setForm((current) => ({ ...current, ...saved }));
-    }
+    if (saved) setProfile((current) => ({ ...current, ...saved }));
   }, []);
 
   useEffect(() => {
-    saveProfile(form);
-  }, [form.displayName, form.team, form.provider, form.topModel, form.source]);
+    saveProfile(profile);
+  }, [profile.displayName, profile.team, profile.period]);
 
   useEffect(() => {
     void refresh();
@@ -168,6 +133,11 @@ export function App() {
   const topRows = useMemo(() => leaderboard?.rows.slice(0, 12) ?? [], [leaderboard]);
   const maxTokens = Math.max(...topRows.map((row) => row.tokens), 1);
   const ownRank = leaderboard?.rows.find((row) => row.fingerprint === fingerprint);
+  const displayName = profile.displayName.trim() || fallbackDisplayName(fingerprint);
+  const snippets = useMemo(
+    () => buildSnippets({ fingerprint, displayName, team: profile.team }),
+    [displayName, fingerprint, profile.team]
+  );
 
   async function refresh(options: RefreshOptions = {}) {
     setIsLoading(true);
@@ -186,9 +156,7 @@ export function App() {
         fetch("/api/stats")
       ]);
 
-      if (!leaderboardResponse.ok || !statsResponse.ok) {
-        throw new Error("request_failed");
-      }
+      if (!leaderboardResponse.ok || !statsResponse.ok) throw new Error("request_failed");
 
       setLeaderboard(await leaderboardResponse.json());
       setStats(await statsResponse.json());
@@ -200,45 +168,18 @@ export function App() {
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await submitMeasurement(form, "Снимок сохранён");
-  }
-
-  async function handleQuickMeasure() {
-    if (!navigator.clipboard?.readText) {
-      setStatus("Вставь снимок ниже");
-      return;
-    }
-
-    setStatus("Читаю буфер");
-    try {
-      const text = await navigator.clipboard.readText();
-      if (!text.trim()) {
-        setStatus("Буфер пуст");
-        return;
-      }
-
-      setQuickText(text);
-      await saveParsedUsage(text);
-    } catch {
-      setStatus("Вставь снимок ниже");
-    }
-  }
-
   async function handleConnectorMeasure() {
     if (!fingerprint) {
       setStatus("Нет отпечатка");
       return;
     }
 
-    const displayName = form.displayName.trim() || fallbackDisplayName(fingerprint);
     const basePayload = {
       fingerprint,
       displayName,
-      team: form.team,
-      period: form.period,
-      proofUrl: form.proofUrl
+      team: profile.team,
+      period: profile.period,
+      proofUrl: profile.proofUrl
     };
     const payload =
       connectorForm.connector === "openai-admin"
@@ -247,19 +188,12 @@ export function App() {
             connector: "openai-admin",
             adminApiKey: connectorForm.adminApiKey
           }
-        : connectorForm.connector === "gemini-monitoring"
-          ? {
-              ...basePayload,
-              connector: "gemini-monitoring",
-              googleProjectId: connectorForm.googleProjectId,
-              googleAccessToken: connectorForm.googleAccessToken
-            }
-          : {
-              ...basePayload,
-              connector: "xai-response",
-              model: connectorForm.xaiModel,
-              usage: connectorForm.xaiUsage
-            };
+        : {
+            ...basePayload,
+            connector: "gemini-monitoring",
+            googleProjectId: connectorForm.googleProjectId,
+            googleAccessToken: connectorForm.googleAccessToken
+          };
 
     setIsLoading(true);
     setStatus("Меряю");
@@ -277,33 +211,7 @@ export function App() {
       }
 
       const result = await response.json();
-      const measurement = result.measurement as {
-        provider: Provider;
-        period: WindowKey;
-        topModel?: string;
-        tokens: number;
-        requests: number;
-        spendUsd: number;
-        artifactBytes: number;
-        linesChanged: number;
-        sessions: number;
-        source: FormState["source"];
-      };
-
-      setForm((current) => ({
-        ...current,
-        displayName,
-        provider: measurement.provider,
-        period: measurement.period,
-        topModel: measurement.topModel ?? current.topModel,
-        tokens: metricToInput(measurement.tokens),
-        requests: metricToInput(measurement.requests),
-        spendUsd: metricToInput(measurement.spendUsd),
-        artifactMb: metricToInput(measurement.artifactBytes / 1_048_576),
-        linesChanged: metricToInput(measurement.linesChanged),
-        sessions: metricToInput(measurement.sessions),
-        source: measurement.source
-      }));
+      const measurement = result.measurement as { period: WindowKey };
       setWindowKey(measurement.period);
       setProvider("all");
       await refresh({
@@ -318,80 +226,9 @@ export function App() {
     }
   }
 
-  async function saveParsedUsage(text: string) {
-    const parsed = parseUsageText(text);
-    const nextForm = {
-      ...form,
-      ...parsed,
-      displayName: form.displayName.trim() || fallbackDisplayName(fingerprint)
-    };
-
-    setForm(nextForm);
-
-    if (!hasAnyMetric(nextForm)) {
-      setStatus("Не вижу метрик");
-      return;
-    }
-
-    await submitMeasurement(nextForm, "Замер сохранён");
-  }
-
-  async function submitMeasurement(nextForm: FormState, successStatus: string) {
-    if (!fingerprint) {
-      setStatus("Нет отпечатка");
-      return;
-    }
-
-    setIsLoading(true);
-    const observedTo = new Date();
-    const observedFrom = new Date(
-      observedTo.getTime() - defaultWindowHours[nextForm.period] * 3_600_000
-    );
-
-    const payload = {
-      fingerprint,
-      displayName: nextForm.displayName.trim() || fallbackDisplayName(fingerprint),
-      team: nextForm.team,
-      provider: nextForm.provider,
-      period: nextForm.period,
-      topModel: nextForm.topModel,
-      observedFrom: observedFrom.toISOString(),
-      observedTo: observedTo.toISOString(),
-      tokens: toInteger(nextForm.tokens),
-      requests: toInteger(nextForm.requests),
-      spendUsd: toNumber(nextForm.spendUsd),
-      artifactBytes: Math.round(toNumber(nextForm.artifactMb) * 1_048_576),
-      linesChanged: toInteger(nextForm.linesChanged),
-      sessions: toInteger(nextForm.sessions),
-      source: nextForm.source,
-      proofUrl: nextForm.proofUrl
-    };
-
-    try {
-      const response = await fetch("/api/measurements", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        setStatus(error?.issues?.[0]?.message ?? "Не сохранилось");
-        return;
-      }
-
-      setWindowKey(nextForm.period);
-      setProvider("all");
-      await refresh({
-        nextProvider: "all",
-        nextWindow: nextForm.period,
-        successStatus
-      });
-    } catch {
-      setStatus("Сеть не ответила");
-    } finally {
-      setIsLoading(false);
-    }
+  async function copySnippet() {
+    await navigator.clipboard.writeText(snippets[snippetProvider]);
+    setStatus("Snippet скопирован");
   }
 
   return (
@@ -406,29 +243,18 @@ export function App() {
             <h1>AI usage rating</h1>
           </div>
         </div>
-        <div className="top-actions">
+        <div className="fingerprint-pill" title="Публичный локальный отпечаток">
+          <Fingerprint size={18} aria-hidden="true" />
+          <span>{fingerprint ? short(fingerprint) : "создаётся"}</span>
           <button
-            className="measure-button"
+            className="icon-button"
             type="button"
-            onClick={handleQuickMeasure}
-            disabled={isLoading}
+            title="Скопировать отпечаток"
+            aria-label="Скопировать отпечаток"
+            onClick={() => fingerprint && navigator.clipboard.writeText(fingerprint)}
           >
-            <Gauge size={17} aria-hidden="true" />
-            Замерить
+            <Clipboard size={16} aria-hidden="true" />
           </button>
-          <div className="fingerprint-pill" title="Публичный локальный отпечаток">
-            <Fingerprint size={18} aria-hidden="true" />
-            <span>{fingerprint ? short(fingerprint) : "создаётся"}</span>
-            <button
-              className="icon-button"
-              type="button"
-              title="Скопировать отпечаток"
-              aria-label="Скопировать отпечаток"
-              onClick={() => fingerprint && navigator.clipboard.writeText(fingerprint)}
-            >
-              <Clipboard size={16} aria-hidden="true" />
-            </button>
-          </div>
         </div>
       </header>
 
@@ -512,8 +338,7 @@ export function App() {
                   <th>токены</th>
                   <th>spend</th>
                   <th>requests</th>
-                  <th>артефакты</th>
-                  <th>строки</th>
+                  <th>токены/request</th>
                   <th>модель</th>
                 </tr>
               </thead>
@@ -530,15 +355,14 @@ export function App() {
                     <td>{formatCompact(row.tokens)}</td>
                     <td>{formatUsd(row.spendUsd)}</td>
                     <td>{formatCompact(row.requests)}</td>
-                    <td>{formatMb(row.artifactMb)}</td>
-                    <td>{formatCompact(row.linesChanged)}</td>
+                    <td>{formatCompact(row.avgTokensPerRequest)}</td>
                     <td>{row.topModel || "-"}</td>
                   </tr>
                 ))}
                 {leaderboard?.rows.length === 0 && (
                   <tr>
-                    <td colSpan={10}>
-                      <div className="empty-row">Нет снимков для выбранного периода</div>
+                    <td colSpan={9}>
+                      <div className="empty-row">Нет достоверных замеров для выбранного периода</div>
                     </td>
                   </tr>
                 )}
@@ -550,14 +374,58 @@ export function App() {
         <aside className="submit-panel">
           <div className="panel-heading">
             <Layers size={20} aria-hidden="true" />
-            <h2>Снимок</h2>
+            <h2>Замер</h2>
             <span>{status}</span>
+          </div>
+
+          <div className="profile-panel">
+            <label>
+              <span>имя</span>
+              <input
+                required
+                minLength={2}
+                maxLength={40}
+                value={profile.displayName}
+                onChange={(event) => setProfileValue("displayName", event.target.value)}
+                placeholder="Wizard"
+              />
+            </label>
+            <label>
+              <span>команда</span>
+              <input
+                maxLength={40}
+                value={profile.team}
+                onChange={(event) => setProfileValue("team", event.target.value)}
+                placeholder="xedoc"
+              />
+            </label>
+            <div className="form-grid">
+              <label>
+                <span>период</span>
+                <select value={profile.period} onChange={(event) => setProfileValue("period", event.target.value as WindowKey)}>
+                  {windows.map((item) => (
+                    <option key={item} value={item}>
+                      {windowLabels[item]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>proof URL</span>
+                <input
+                  maxLength={500}
+                  value={profile.proofUrl}
+                  onChange={(event) => setProfileValue("proofUrl", event.target.value)}
+                  placeholder="https://..."
+                />
+              </label>
+            </div>
           </div>
 
           <div className="connector-panel">
             <div className="connector-heading">
               <Gauge size={18} aria-hidden="true" />
-              <h3>Реальный замер</h3>
+              <h3>Агрегатный замер</h3>
             </div>
             <div className="connector-tabs" aria-label="Коннектор">
               <button
@@ -573,13 +441,6 @@ export function App() {
                 onClick={() => setConnectorValue("connector", "gemini-monitoring")}
               >
                 Gemini
-              </button>
-              <button
-                type="button"
-                className={connectorForm.connector === "xai-response" ? "active" : ""}
-                onClick={() => setConnectorValue("connector", "xai-response")}
-              >
-                Grok
               </button>
             </div>
 
@@ -620,28 +481,6 @@ export function App() {
               </>
             )}
 
-            {connectorForm.connector === "xai-response" && (
-              <>
-                <label>
-                  <span>model</span>
-                  <input
-                    maxLength={80}
-                    value={connectorForm.xaiModel}
-                    onChange={(event) => setConnectorValue("xaiModel", event.target.value)}
-                    placeholder="grok-4.3"
-                  />
-                </label>
-                <label>
-                  <span>xAI usage JSON</span>
-                  <textarea
-                    value={connectorForm.xaiUsage}
-                    onChange={(event) => setConnectorValue("xaiUsage", event.target.value)}
-                    placeholder='{"prompt_tokens":199,"completion_tokens":1,"total_tokens":200,"cost_in_usd_ticks":158500}'
-                  />
-                </label>
-              </>
-            )}
-
             <button
               className="measure-submit-button"
               type="button"
@@ -652,131 +491,63 @@ export function App() {
               Запросить usage
             </button>
           </div>
+        </aside>
+      </section>
 
-          <div className="quick-import">
-            <label>
-              <span>быстрый импорт</span>
-              <textarea
-                value={quickText}
-                onChange={(event) => setQuickText(event.target.value)}
-                placeholder="30d spend $1,305,088.81 · 603B tokens · 7.6M requests · top model: gpt-5.5-2026-04-23"
-              />
-            </label>
+      <section className="snippets-section" aria-label="SDK snippets">
+        <div className="snippet-toolbar">
+          <div>
+            <p className="eyebrow">SDK snippets</p>
+            <h2>Автозамер после API-вызова</h2>
+          </div>
+          <div className="snippet-tabs" aria-label="SDK provider">
             <button
-              className="quick-button"
               type="button"
-              onClick={() => saveParsedUsage(quickText)}
-              disabled={isLoading}
+              className={snippetProvider === "openai" ? "active" : ""}
+              onClick={() => setSnippetProvider("openai")}
             >
-              <ClipboardPaste size={17} aria-hidden="true" />
-              Распознать
+              OpenAI
+            </button>
+            <button
+              type="button"
+              className={snippetProvider === "xai" ? "active" : ""}
+              onClick={() => setSnippetProvider("xai")}
+            >
+              xAI
+            </button>
+            <button
+              type="button"
+              className={snippetProvider === "gemini" ? "active" : ""}
+              onClick={() => setSnippetProvider("gemini")}
+            >
+              Gemini
             </button>
           </div>
-
-          <form onSubmit={handleSubmit}>
-            <label>
-              <span>имя</span>
-              <input
-                required
-                minLength={2}
-                maxLength={40}
-                value={form.displayName}
-                onChange={(event) => setFormValue("displayName", event.target.value)}
-                placeholder="Wizard"
-              />
-            </label>
-            <label>
-              <span>команда</span>
-              <input
-                maxLength={40}
-                value={form.team}
-                onChange={(event) => setFormValue("team", event.target.value)}
-                placeholder="xedoc"
-              />
-            </label>
-            <div className="form-grid">
-              <label>
-                <span>провайдер</span>
-                <select value={form.provider} onChange={(event) => setFormValue("provider", event.target.value as Provider)}>
-                  {providers.map((item) => (
-                    <option key={item} value={item}>
-                      {providerLabels[item]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>период</span>
-                <select value={form.period} onChange={(event) => setFormValue("period", event.target.value as WindowKey)}>
-                  {windows.map((item) => (
-                    <option key={item} value={item}>
-                      {windowLabels[item]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label>
-              <span>top model</span>
-              <input
-                maxLength={80}
-                value={form.topModel}
-                onChange={(event) => setFormValue("topModel", event.target.value)}
-                placeholder="gpt-5.5-2026-04-23"
-              />
-            </label>
-            <div className="form-grid">
-              <NumberField label="токены" value={form.tokens} onChange={(value) => setFormValue("tokens", value)} />
-              <NumberField label="requests" value={form.requests} onChange={(value) => setFormValue("requests", value)} />
-              <NumberField label="spend $" value={form.spendUsd} onChange={(value) => setFormValue("spendUsd", value)} />
-              <NumberField label="artifact MB" value={form.artifactMb} onChange={(value) => setFormValue("artifactMb", value)} />
-              <NumberField label="строки" value={form.linesChanged} onChange={(value) => setFormValue("linesChanged", value)} />
-              <NumberField label="сессии" value={form.sessions} onChange={(value) => setFormValue("sessions", value)} />
-            </div>
-            <div className="form-grid">
-              <label>
-                <span>source</span>
-                <select value={form.source} onChange={(event) => setFormValue("source", event.target.value as FormState["source"])}>
-                  <option value="manual">manual</option>
-                  <option value="codexbar">codexbar</option>
-                  <option value="api">api</option>
-                  <option value="oauth">oauth</option>
-                  <option value="import">import</option>
-                </select>
-              </label>
-              <label>
-                <span>proof URL</span>
-                <input
-                  maxLength={500}
-                  value={form.proofUrl}
-                  onChange={(event) => setFormValue("proofUrl", event.target.value)}
-                  placeholder="https://..."
-                />
-              </label>
-            </div>
-            <button className="submit-button" type="submit" disabled={isLoading}>
-              <Send size={18} aria-hidden="true" />
-              Сохранить
-            </button>
-          </form>
-        </aside>
+          <button className="icon-text-button" type="button" onClick={copySnippet}>
+            <Clipboard size={16} aria-hidden="true" />
+            Copy
+          </button>
+        </div>
+        <pre className="snippet-code">
+          <code>{snippets[snippetProvider]}</code>
+        </pre>
       </section>
 
       <section className="api-band" aria-label="API">
         <div>
           <GitBranch size={18} aria-hidden="true" />
-          <code>POST /api/measurements</code>
+          <code>POST /api/sdk/usage</code>
         </div>
         <div>
           <WalletCards size={18} aria-hidden="true" />
-          <code>tokens requests spendUsd artifactBytes linesChanged sessions topModel</code>
+          <code>provider model usage fingerprint displayName</code>
         </div>
       </section>
     </main>
   );
 
-  function setFormValue<Key extends keyof FormState>(key: Key, value: FormState[Key]) {
-    setForm((current) => ({ ...current, [key]: value }));
+  function setProfileValue<Key extends keyof ProfileState>(key: Key, value: ProfileState[Key]) {
+    setProfile((current) => ({ ...current, [key]: value }));
   }
 
   function setConnectorValue<Key extends keyof ConnectorFormState>(
@@ -797,23 +568,6 @@ function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; 
   );
 }
 
-function NumberField({
-  label,
-  value,
-  onChange
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <label>
-      <span>{label}</span>
-      <input inputMode="decimal" value={value} onChange={(event) => onChange(event.target.value)} placeholder="0" />
-    </label>
-  );
-}
-
 async function createFingerprint() {
   const storageKey = "top-xedoc-public-fingerprint-seed";
   let seed = localStorage.getItem(storageKey);
@@ -830,173 +584,118 @@ async function createFingerprint() {
     .replaceAll("=", "");
 }
 
-function loadProfile(): Partial<FormState> | null {
+function loadProfile(): Partial<ProfileState> | null {
   try {
     const raw = localStorage.getItem(profileStorageKey);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<FormState>;
+    const parsed = JSON.parse(raw) as Partial<ProfileState>;
     return {
       displayName: parsed.displayName ?? "",
       team: parsed.team ?? "",
-      provider: providers.includes(parsed.provider as Provider) ? parsed.provider : "codex",
-      topModel: parsed.topModel ?? "",
-      source: parsed.source ?? "manual"
+      period: windows.includes(parsed.period as WindowKey) ? parsed.period : "day"
     };
   } catch {
     return null;
   }
 }
 
-function saveProfile(form: FormState) {
+function saveProfile(profile: ProfileState) {
   localStorage.setItem(
     profileStorageKey,
     JSON.stringify({
-      displayName: form.displayName,
-      team: form.team,
-      provider: form.provider,
-      topModel: form.topModel,
-      source: form.source
+      displayName: profile.displayName,
+      team: profile.team,
+      period: profile.period
     })
   );
 }
 
-function parseUsageText(text: string): Partial<FormState> {
-  const normalized = text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-  const lower = normalized.toLowerCase();
-  const parsed: Partial<FormState> = {
-    source: lower.includes("codexbar") ? "codexbar" : "import"
+function buildSnippets({
+  fingerprint,
+  displayName,
+  team
+}: {
+  fingerprint: string;
+  displayName: string;
+  team: string;
+}): Record<SnippetProvider, string> {
+  const endpoint = "https://top.xedoc.ru/api/sdk/usage";
+  const identity = `fingerprint: ${JSON.stringify(fingerprint || "PASTE_FINGERPRINT")},\n    displayName: ${JSON.stringify(displayName)},\n    team: ${JSON.stringify(team)}`;
+
+  return {
+    openai: `import OpenAI from "openai";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+async function reportTopXedoc(response) {
+  if (!response.usage) return;
+  await fetch(${JSON.stringify(endpoint)}, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ${identity},
+      provider: "openai",
+      model: response.model,
+      usage: response.usage
+    })
+  });
+}
+
+const response = await openai.chat.completions.create({
+  model: "gpt-4.1-mini",
+  messages: [{ role: "user", content: "Hello" }]
+});
+await reportTopXedoc(response);`,
+    xai: `import OpenAI from "openai";
+
+const xai = new OpenAI({
+  apiKey: process.env.XAI_API_KEY,
+  baseURL: "https://api.x.ai/v1"
+});
+
+async function reportTopXedoc(response) {
+  if (!response.usage) return;
+  await fetch(${JSON.stringify(endpoint)}, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ${identity},
+      provider: "xai",
+      model: response.model,
+      usage: response.usage
+    })
+  });
+}
+
+const response = await xai.chat.completions.create({
+  model: "grok-4.3",
+  messages: [{ role: "user", content: "Hello" }]
+});
+await reportTopXedoc(response);`,
+    gemini: `import { GoogleGenAI } from "@google/genai";
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+async function reportTopXedoc(response) {
+  if (!response.usageMetadata) return;
+  await fetch(${JSON.stringify(endpoint)}, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ${identity},
+      provider: "gemini",
+      model: response.modelVersion,
+      usage: response.usageMetadata
+    })
+  });
+}
+
+const response = await ai.models.generateContent({
+  model: "gemini-2.5-flash",
+  contents: "Hello"
+});
+await reportTopXedoc(response);`
   };
-
-  const provider = detectProvider(lower);
-  if (provider) parsed.provider = provider;
-
-  const period = detectPeriod(lower);
-  if (period) parsed.period = period;
-
-  const model = findModel(normalized);
-  if (model) parsed.topModel = model;
-
-  const spend = findMoney(normalized);
-  if (spend !== null) parsed.spendUsd = metricToInput(spend);
-
-  const tokens = findMetric(normalized, ["tokens?", "токен(?:ы|ов|а)?"]);
-  if (tokens !== null) parsed.tokens = metricToInput(tokens);
-
-  const requests = findMetric(normalized, ["requests?", "req", "запрос(?:ы|ов|а)?"]);
-  if (requests !== null) parsed.requests = metricToInput(requests);
-
-  const artifacts = findMetric(normalized, ["artifact(?:s)?\\s*(?:mb|мб)?", "артефакт(?:ы|ов|а)?"]);
-  if (artifacts !== null) parsed.artifactMb = metricToInput(artifacts);
-
-  const lines = findMetric(normalized, ["lines?", "строк(?:и|а)?"]);
-  if (lines !== null) parsed.linesChanged = metricToInput(lines);
-
-  const sessions = findMetric(normalized, ["sessions?", "сесси(?:и|й|я)"]);
-  if (sessions !== null) parsed.sessions = metricToInput(sessions);
-
-  return parsed;
-}
-
-function detectProvider(value: string): Provider | null {
-  if (value.includes("openai api") || value.includes("admin api")) return "openai-api";
-  if (value.includes("gemini")) return "gemini";
-  if (value.includes("grok") || value.includes("x.ai") || value.includes("xai")) return "grok";
-  if (value.includes("claude") || value.includes("anthropic")) return "claude";
-  if (value.includes("cursor")) return "cursor";
-  if (value.includes("zed") || value.includes("z.ai")) return "zed";
-  if (value.includes("codex")) return "codex";
-  return null;
-}
-
-function detectPeriod(value: string): WindowKey | null {
-  if (/\b(?:1h|hour|час)\b/.test(value)) return "hour";
-  if (/\b(?:today|24h|day|день|сутки)\b/.test(value)) return "day";
-  if (/\b(?:7d|week|недел)/.test(value)) return "week";
-  if (/\b(?:30d|month|месяц)\b/.test(value)) return "month";
-  if (/\b(?:all|total|lifetime)\b/.test(value)) return "all";
-  return null;
-}
-
-function findModel(value: string) {
-  const match = value.match(/(?:top\s*model|model|модель)\s*[:=]?\s*([a-z0-9][a-z0-9._:-]{2,80})/i);
-  return match?.[1];
-}
-
-function findMoney(value: string) {
-  const dollar = value.match(/\$\s*([0-9][0-9\s,]*(?:\.[0-9]+)?)/i);
-  if (dollar?.[1]) return parseDecimal(dollar[1]);
-
-  const spend = value.match(/(?:spend|cost)\s*[:=]?\s*\$?\s*([0-9][0-9\s,]*(?:\.[0-9]+)?)/i);
-  return spend?.[1] ? parseDecimal(spend[1]) : null;
-}
-
-function findMetric(value: string, labels: string[]) {
-  const label = labels.join("|");
-  const number = "([0-9][0-9\\s.,]*(?:k|m|b|t|bn|kb|mb|gb|tb|к|м|млн|млрд)?)";
-  const after = new RegExp(`(?:${label})\\s*[:=]?\\s*${number}`, "i");
-  const before = new RegExp(`${number}\\s*(?:${label})`, "i");
-  const afterMatch = value.match(after);
-  if (afterMatch?.[1]) return parseMagnitude(afterMatch[1]);
-
-  const beforeMatch = value.match(before);
-  return beforeMatch?.[1] ? parseMagnitude(beforeMatch[1]) : null;
-}
-
-function parseMagnitude(value: string) {
-  const raw = value.trim().toLowerCase().replace(/\s+/g, "");
-  const unitMatch = raw.match(/(млрд|млн|bn|tb|gb|mb|kb|[kmbtкм])$/i);
-  const unit = unitMatch?.[1] ?? "";
-  const number = parseDecimal(unit ? raw.slice(0, -unit.length) : raw);
-  const multipliers: Record<string, number> = {
-    k: 1_000,
-    "к": 1_000,
-    m: 1_000_000,
-    "м": 1_000_000,
-    млн: 1_000_000,
-    b: 1_000_000_000,
-    bn: 1_000_000_000,
-    млрд: 1_000_000_000,
-    t: 1_000_000_000_000,
-    kb: 1 / 1024,
-    mb: 1,
-    gb: 1024,
-    tb: 1024 * 1024
-  };
-
-  return number * (multipliers[unit] ?? 1);
-}
-
-function parseDecimal(value: string) {
-  const clean = value.trim().replace(/\s+/g, "");
-  if (clean.includes(".") && clean.includes(",")) {
-    return Number(clean.replaceAll(",", ""));
-  }
-
-  const commaCount = (clean.match(/,/g) ?? []).length;
-  if (commaCount > 1 || /\d+,\d{3}$/.test(clean)) {
-    return Number(clean.replaceAll(",", ""));
-  }
-
-  if (clean.includes(",")) {
-    return Number(clean.replace(",", "."));
-  }
-
-  return Number(clean.replaceAll(",", ""));
-}
-
-function hasAnyMetric(value: FormState) {
-  return (
-    toNumber(value.tokens) > 0 ||
-    toNumber(value.requests) > 0 ||
-    toNumber(value.spendUsd) > 0 ||
-    toNumber(value.artifactMb) > 0 ||
-    toNumber(value.linesChanged) > 0 ||
-    toNumber(value.sessions) > 0
-  );
-}
-
-function metricToInput(value: number) {
-  return Number.isFinite(value) && value > 0 ? String(Math.round(value * 100) / 100) : "";
 }
 
 function fallbackDisplayName(fingerprint: string) {
@@ -1005,15 +704,6 @@ function fallbackDisplayName(fingerprint: string) {
 
 function short(value: string) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
-}
-
-function toNumber(value: string) {
-  const normalized = value.replace(",", ".").trim();
-  return normalized ? Number(normalized) : 0;
-}
-
-function toInteger(value: string) {
-  return Math.round(toNumber(value));
 }
 
 function formatCompact(value: number) {
@@ -1029,13 +719,6 @@ function formatUsd(value: number) {
     currency: "USD",
     maximumFractionDigits: value > 1000 ? 0 : 2
   }).format(value);
-}
-
-function formatMb(value: number) {
-  if (value >= 1024) {
-    return `${formatCompact(value / 1024)} GB`;
-  }
-  return `${formatCompact(value)} MB`;
 }
 
 function formatDate(value: string) {

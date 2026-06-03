@@ -13,7 +13,7 @@ export const providerSchema = z.enum([
 
 export const periodSchema = z.enum(["hour", "day", "week", "month", "all", "custom"]);
 export const windowSchema = z.enum(["hour", "day", "week", "month", "all"]);
-export const sourceSchema = z.enum(["manual", "api", "oauth", "import", "codexbar"]);
+export const sourceSchema = z.enum(["manual", "api", "oauth", "import", "codexbar", "sdk"]);
 
 export const sortSchema = z.enum([
   "tokens",
@@ -59,7 +59,7 @@ const measurementBaseSchema = z.object({
   artifactBytes: metricInteger.max(1_000_000_000_000_000).default(0),
   linesChanged: metricInteger.max(1_000_000_000).default(0),
   sessions: metricInteger.max(10_000_000).default(0),
-  source: sourceSchema.default("manual"),
+  source: sourceSchema.default("api"),
   proofUrl: optionalText(500).refine((value) => !value || URL.canParse(value), {
     message: "Invalid URL"
   }),

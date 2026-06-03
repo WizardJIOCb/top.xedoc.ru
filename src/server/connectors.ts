@@ -41,15 +41,24 @@ export const connectorMeasureSchema = z.discriminatedUnion("connector", [
     connector: z.literal("gemini-monitoring"),
     googleAccessToken: secretString,
     googleProjectId: z.string().trim().min(3).max(128).regex(/^[A-Za-z0-9_.:-]+$/)
-  }),
-  baseConnectorSchema.extend({
-    connector: z.literal("xai-response"),
-    model: optionalText(80),
-    usage: z.union([z.string().trim().min(2).max(8192), z.record(z.unknown())])
   })
 ]);
 
+export const sdkUsageSchema = z.object({
+  fingerprint: fingerprintSchema,
+  displayName: z.string().trim().min(2).max(40),
+  team: optionalText(40),
+  provider: z.enum(["openai", "xai", "gemini"]),
+  model: optionalText(80),
+  usage: z.record(z.unknown()),
+  observedAt: z.string().datetime({ offset: true }).optional(),
+  proofUrl: optionalText(500).refine((value) => !value || URL.canParse(value), {
+    message: "Invalid URL"
+  })
+});
+
 export type ConnectorMeasureInput = z.infer<typeof connectorMeasureSchema>;
+export type SdkUsageInput = z.infer<typeof sdkUsageSchema>;
 
 type ConnectorResult = {
   measurement: Awaited<ReturnType<typeof appendMeasurement>>;
@@ -172,9 +181,42 @@ export async function measureConnector(input: ConnectorMeasureInput): Promise<Co
       return measureOpenAi(input);
     case "gemini-monitoring":
       return measureGemini(input);
-    case "xai-response":
-      return measureXaiResponse(input);
   }
+}
+
+export async function recordSdkUsage(input: SdkUsageInput): Promise<ConnectorResult> {
+  const parsedUsage = parseSdkUsage(input);
+  if (!hasAnyMeasuredMetric(parsedUsage)) {
+    throw new ConnectorPublicError(422, "no_usage", "No trusted SDK usage was found in this payload.");
+  }
+
+  const observedToDate = input.observedAt ? new Date(input.observedAt) : new Date();
+  const observedFromDate = new Date(observedToDate.getTime() - 1);
+  const provider = sdkProviderToProvider(input.provider);
+  const measurement = await appendMeasurement({
+    fingerprint: input.fingerprint,
+    displayName: input.displayName,
+    team: input.team,
+    provider,
+    topModel: input.model ?? parsedUsage.model,
+    period: "custom",
+    observedFrom: observedFromDate.toISOString(),
+    observedTo: observedToDate.toISOString(),
+    tokens: parsedUsage.tokens,
+    inputTokens: parsedUsage.inputTokens,
+    outputTokens: parsedUsage.outputTokens,
+    cachedTokens: parsedUsage.cachedTokens,
+    requests: 1,
+    spendUsd: parsedUsage.spendUsd,
+    artifactBytes: 0,
+    linesChanged: 0,
+    sessions: 0,
+    source: "sdk",
+    proofUrl: input.proofUrl,
+    notes: "Trusted SDK response usage event."
+  });
+
+  return { measurement, warnings: parsedUsage.warnings };
 }
 
 async function measureOpenAi(
@@ -299,56 +341,6 @@ async function measureGemini(
   return {
     measurement,
     warnings: ["Gemini spend is not returned by Cloud Monitoring quota metrics.", ...warnings]
-  };
-}
-
-async function measureXaiResponse(
-  input: Extract<ConnectorMeasureInput, { connector: "xai-response" }>
-): Promise<ConnectorResult> {
-  const range = getDateRange(input.period);
-  let rawUsage: unknown;
-  try {
-    rawUsage = typeof input.usage === "string" ? JSON.parse(input.usage) : input.usage;
-  } catch {
-    throw new ConnectorPublicError(400, "invalid_usage_json", "xAI usage JSON is invalid.");
-  }
-  const usage = xaiUsageSchema.parse(rawUsage);
-  const inputTokens = usage.prompt_tokens ?? 0;
-  const outputTokens = usage.completion_tokens ?? 0;
-  const tokens = usage.total_tokens ?? inputTokens + outputTokens;
-  const cachedTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
-  const spendUsd = (usage.cost_in_usd_ticks ?? 0) / 10_000_000_000;
-
-  if (tokens <= 0 && spendUsd <= 0) {
-    throw new ConnectorPublicError(422, "no_usage", "No xAI usage was found in this response.");
-  }
-
-  const measurement = await appendMeasurement({
-    fingerprint: input.fingerprint,
-    displayName: input.displayName,
-    team: input.team,
-    provider: "grok",
-    topModel: input.model,
-    period: input.period,
-    observedFrom: range.observedFrom,
-    observedTo: range.observedTo,
-    tokens,
-    inputTokens,
-    outputTokens,
-    cachedTokens,
-    requests: 1,
-    spendUsd,
-    artifactBytes: 0,
-    linesChanged: 0,
-    sessions: 0,
-    source: "api",
-    proofUrl: input.proofUrl,
-    notes: "xAI connector stores per-response usage; aggregate API backfill is not public."
-  });
-
-  return {
-    measurement,
-    warnings: ["xAI/Grok aggregate backfill is not public; this stores one API response usage object."]
   };
 }
 
@@ -545,4 +537,80 @@ function numberField(record: Record<string, unknown>, key: string) {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseSdkUsage(input: SdkUsageInput) {
+  const usageEnvelope = input.usage;
+  const usage = isObject(usageEnvelope.usage)
+    ? usageEnvelope.usage
+    : isObject(usageEnvelope.usageMetadata)
+      ? usageEnvelope.usageMetadata
+      : usageEnvelope;
+  const warnings: string[] = [];
+  const model = stringField(usageEnvelope, "model") ?? stringField(usageEnvelope, "modelVersion");
+
+  if (input.provider === "gemini") {
+    const inputTokens = integerField(usage, "promptTokenCount");
+    const outputTokens =
+      integerField(usage, "candidatesTokenCount") + integerField(usage, "thoughtsTokenCount");
+    const totalTokens = integerField(usage, "totalTokenCount") || inputTokens + outputTokens;
+    return {
+      tokens: totalTokens,
+      inputTokens,
+      outputTokens,
+      cachedTokens: integerField(usage, "cachedContentTokenCount"),
+      requests: 1,
+      spendUsd: 0,
+      model,
+      warnings
+    };
+  }
+
+  const inputTokens = integerField(usage, "input_tokens") || integerField(usage, "prompt_tokens");
+  const outputTokens =
+    integerField(usage, "output_tokens") || integerField(usage, "completion_tokens");
+  const tokens = integerField(usage, "total_tokens") || inputTokens + outputTokens;
+  const details =
+    isObject(usage.input_tokens_details)
+      ? usage.input_tokens_details
+      : isObject(usage.prompt_tokens_details)
+        ? usage.prompt_tokens_details
+        : {};
+  const cachedTokens =
+    integerField(details, "cached_tokens") || integerField(details, "cached_input_tokens");
+  const spendUsd =
+    input.provider === "xai" ? integerField(usage, "cost_in_usd_ticks") / 10_000_000_000 : 0;
+
+  if (input.provider === "openai" && spendUsd === 0) {
+    warnings.push("OpenAI SDK responses do not include spend; use Admin API for cost.");
+  }
+
+  return {
+    tokens,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    requests: 1,
+    spendUsd,
+    model,
+    warnings
+  };
+}
+
+function sdkProviderToProvider(provider: SdkUsageInput["provider"]) {
+  if (provider === "openai") return "openai-api";
+  if (provider === "xai") return "grok";
+  return "gemini";
+}
+
+function integerField(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  if (typeof value === "number" && Number.isFinite(value)) return Math.max(0, Math.round(value));
+  if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+  return 0;
+}
+
+function stringField(record: Record<string, unknown>, key: string) {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

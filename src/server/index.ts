@@ -5,16 +5,16 @@ import { z, ZodError } from "zod";
 
 import {
   fingerprintParamSchema,
-  leaderboardQuerySchema,
-  measurementInputSchema
+  leaderboardQuerySchema
 } from "../shared/schema.js";
 import {
   ConnectorPublicError,
   connectorMeasureSchema,
-  measureConnector
+  measureConnector,
+  recordSdkUsage,
+  sdkUsageSchema
 } from "./connectors.js";
 import {
-  appendMeasurement,
   buildLeaderboard,
   ensureStore,
   getDataFilePath,
@@ -62,15 +62,15 @@ app.get("/api/profile/:fingerprint", asyncHandler(async (req, res) => {
   res.json(await getProfile(params.fingerprint));
 }));
 
-app.post("/api/measurements", postRateLimit, asyncHandler(async (req, res) => {
-  const input = parseWithSchema(measurementInputSchema, req.body);
-  const record = await appendMeasurement(input);
-  res.status(201).json({ ok: true, measurement: record });
-}));
-
 app.post("/api/connectors/measure", connectorRateLimit, asyncHandler(async (req, res) => {
   const input = parseWithSchema(connectorMeasureSchema, req.body);
   const result = await measureConnector(input);
+  res.status(201).json({ ok: true, ...result });
+}));
+
+app.post("/api/sdk/usage", postRateLimit, asyncHandler(async (req, res) => {
+  const input = parseWithSchema(sdkUsageSchema, req.body);
+  const result = await recordSdkUsage(input);
   res.status(201).json({ ok: true, ...result });
 }));
 

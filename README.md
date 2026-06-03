@@ -1,21 +1,20 @@
 # top.xedoc.ru
 
-Публичный рейтинг AI usage по анонимному локальному отпечатку. MVP хранит снимки метрик на сервере и строит лидерборды по периодам `hour`, `day`, `week`, `month`, `all`.
+Публичный рейтинг AI usage по анонимному локальному отпечатку. Сервис хранит только достоверные замеры: агрегаты из провайдерских API или `usage` объекты из SDK-ответов.
 
 ## Метрики
 
 - `tokens`, `inputTokens`, `outputTokens`, `cachedTokens`
 - `requests`
-- `spendUsd`
-- `artifactBytes`
-- `linesChanged`
-- `sessions`
+- `spendUsd`, если провайдер возвращает реальные cost данные
 - `provider`, `topModel`, `source`, `proofUrl`
 
-## API
+Ручной ввод токенов, запросов и spend отключён.
+
+## SDK endpoint
 
 ```http
-POST /api/measurements
+POST /api/sdk/usage
 Content-Type: application/json
 ```
 
@@ -23,21 +22,20 @@ Content-Type: application/json
 {
   "fingerprint": "public_browser_fingerprint",
   "displayName": "Wizard",
-  "provider": "openai-api",
-  "period": "month",
-  "observedFrom": "2026-05-04T00:00:00.000Z",
-  "observedTo": "2026-06-03T00:00:00.000Z",
-  "tokens": 603000000000,
-  "requests": 7600000,
-  "spendUsd": 1305088.81,
-  "topModel": "gpt-5.5-2026-04-23",
-  "source": "codexbar"
+  "team": "xedoc",
+  "provider": "openai",
+  "model": "gpt-4.1-mini",
+  "usage": {
+    "prompt_tokens": 199,
+    "completion_tokens": 1,
+    "total_tokens": 200
+  }
 }
 ```
 
-Все входящие payload/query/params валидируются через Zod. WebSocket в проекте не используется.
+Поддерживаемые `provider`: `openai`, `xai`, `gemini`.
 
-## Реальные коннекторы
+## Агрегатные коннекторы
 
 ```http
 POST /api/connectors/measure
@@ -75,25 +73,7 @@ Content-Type: application/json
 }
 ```
 
-### xAI / Grok response usage
-
-xAI отдаёт usage и cost в каждом API response. Этот коннектор сохраняет такой usage object.
-
-```json
-{
-  "connector": "xai-response",
-  "fingerprint": "public_browser_fingerprint",
-  "displayName": "Wizard",
-  "period": "day",
-  "model": "grok-4.3",
-  "usage": {
-    "prompt_tokens": 199,
-    "completion_tokens": 1,
-    "total_tokens": 200,
-    "cost_in_usd_ticks": 158500
-  }
-}
-```
+Все входящие payload/query/params валидируются через Zod. WebSocket в проекте не используется.
 
 ## Локально
 

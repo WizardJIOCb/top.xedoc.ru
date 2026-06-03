@@ -150,12 +150,23 @@ export async function buildLeaderboard(query: LeaderboardQuery): Promise<Leaderb
   const normalizedQuery = leaderboardQuerySchema.parse(query);
   const records = await readMeasurements();
   const latestByFingerprintProvider = new Map<string, StoredMeasurement>();
+  const sdkByFingerprintProvider = new Map<string, StoredMeasurement[]>();
 
   for (const record of records) {
-    if (!matchesWindow(record, normalizedQuery.window)) continue;
     if (normalizedQuery.provider !== "all" && record.provider !== normalizedQuery.provider) continue;
 
     const key = `${record.fingerprint}:${record.provider}`;
+
+    if (record.source === "sdk") {
+      if (!sdkEventMatchesWindow(record, normalizedQuery.window)) continue;
+      const bucket = sdkByFingerprintProvider.get(key) ?? [];
+      bucket.push(record);
+      sdkByFingerprintProvider.set(key, bucket);
+      continue;
+    }
+
+    if (!snapshotMatchesWindow(record, normalizedQuery.window)) continue;
+
     const current = latestByFingerprintProvider.get(key);
     if (!current || record.createdAt > current.createdAt) {
       latestByFingerprintProvider.set(key, record);
@@ -167,6 +178,14 @@ export async function buildLeaderboard(query: LeaderboardQuery): Promise<Leaderb
     const bucket = grouped.get(record.fingerprint) ?? [];
     bucket.push(record);
     grouped.set(record.fingerprint, bucket);
+  }
+  for (const [key, records] of sdkByFingerprintProvider.entries()) {
+    if (latestByFingerprintProvider.has(key)) continue;
+    const fingerprint = records[0]?.fingerprint;
+    if (!fingerprint) continue;
+    const bucket = grouped.get(fingerprint) ?? [];
+    bucket.push(...records);
+    grouped.set(fingerprint, bucket);
   }
 
   const rows = [...grouped.entries()].map(([fingerprint, snapshots]) =>
@@ -185,11 +204,21 @@ export async function buildLeaderboard(query: LeaderboardQuery): Promise<Leaderb
   };
 }
 
-function matchesWindow(record: StoredMeasurement, window: WindowKey) {
+function snapshotMatchesWindow(record: StoredMeasurement, window: WindowKey) {
   if (window === "all") {
     return record.period === "all";
   }
   return record.period === window;
+}
+
+function sdkEventMatchesWindow(record: StoredMeasurement, window: WindowKey) {
+  if (window === "all") return true;
+
+  const observedTo = Date.parse(record.observedTo);
+  if (!Number.isFinite(observedTo)) return false;
+
+  const windowMs = defaultWindowHours[window] * 3_600_000;
+  return observedTo >= Date.now() - windowMs;
 }
 
 function summarizeSnapshots(
