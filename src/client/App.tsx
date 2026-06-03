@@ -2,8 +2,10 @@ import {
   Activity,
   BarChart3,
   Clipboard,
+  ClipboardPaste,
   Coins,
   Fingerprint,
+  Gauge,
   GitBranch,
   Layers,
   LineChart,
@@ -74,6 +76,14 @@ type FormState = {
   proofUrl: string;
 };
 
+type RefreshOptions = {
+  nextProvider?: Provider | "all";
+  nextSort?: SortKey;
+  nextWindow?: WindowKey;
+  successStatus?: string;
+};
+
+const profileStorageKey = "top-xedoc-profile";
 const providers: Provider[] = ["codex", "openai-api", "gemini", "grok", "claude", "cursor", "zed", "other"];
 const windows: WindowKey[] = ["hour", "day", "week", "month", "all"];
 const sorts: Array<{ key: SortKey; label: string }> = [
@@ -111,12 +121,24 @@ export function App() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [form, setForm] = useState<FormState>(defaultForm);
+  const [quickText, setQuickText] = useState("");
   const [status, setStatus] = useState("Готово");
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     createFingerprint().then(setFingerprint).catch(() => setFingerprint(""));
   }, []);
+
+  useEffect(() => {
+    const saved = loadProfile();
+    if (saved) {
+      setForm((current) => ({ ...current, ...saved }));
+    }
+  }, []);
+
+  useEffect(() => {
+    saveProfile(form);
+  }, [form.displayName, form.team, form.provider, form.topModel, form.source]);
 
   useEffect(() => {
     void refresh();
@@ -126,13 +148,16 @@ export function App() {
   const maxTokens = Math.max(...topRows.map((row) => row.tokens), 1);
   const ownRank = leaderboard?.rows.find((row) => row.fingerprint === fingerprint);
 
-  async function refresh() {
+  async function refresh(options: RefreshOptions = {}) {
     setIsLoading(true);
     try {
+      const requestWindow = options.nextWindow ?? windowKey;
+      const requestProvider = options.nextProvider ?? provider;
+      const requestSort = options.nextSort ?? sort;
       const query = new URLSearchParams({
-        window: windowKey,
-        provider,
-        sort,
+        window: requestWindow,
+        provider: requestProvider,
+        sort: requestSort,
         limit: "50"
       });
       const [leaderboardResponse, statsResponse] = await Promise.all([
@@ -146,7 +171,7 @@ export function App() {
 
       setLeaderboard(await leaderboardResponse.json());
       setStats(await statsResponse.json());
-      setStatus("Обновлено");
+      setStatus(options.successStatus ?? "Обновлено");
     } catch {
       setStatus("API недоступен");
     } finally {
@@ -156,6 +181,49 @@ export function App() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await submitMeasurement(form, "Снимок сохранён");
+  }
+
+  async function handleQuickMeasure() {
+    if (!navigator.clipboard?.readText) {
+      setStatus("Вставь снимок ниже");
+      return;
+    }
+
+    setStatus("Читаю буфер");
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) {
+        setStatus("Буфер пуст");
+        return;
+      }
+
+      setQuickText(text);
+      await saveParsedUsage(text);
+    } catch {
+      setStatus("Вставь снимок ниже");
+    }
+  }
+
+  async function saveParsedUsage(text: string) {
+    const parsed = parseUsageText(text);
+    const nextForm = {
+      ...form,
+      ...parsed,
+      displayName: form.displayName.trim() || fallbackDisplayName(fingerprint)
+    };
+
+    setForm(nextForm);
+
+    if (!hasAnyMetric(nextForm)) {
+      setStatus("Не вижу метрик");
+      return;
+    }
+
+    await submitMeasurement(nextForm, "Замер сохранён");
+  }
+
+  async function submitMeasurement(nextForm: FormState, successStatus: string) {
     if (!fingerprint) {
       setStatus("Нет отпечатка");
       return;
@@ -163,25 +231,27 @@ export function App() {
 
     setIsLoading(true);
     const observedTo = new Date();
-    const observedFrom = new Date(observedTo.getTime() - defaultWindowHours[form.period] * 3_600_000);
+    const observedFrom = new Date(
+      observedTo.getTime() - defaultWindowHours[nextForm.period] * 3_600_000
+    );
 
     const payload = {
       fingerprint,
-      displayName: form.displayName,
-      team: form.team,
-      provider: form.provider,
-      period: form.period,
-      topModel: form.topModel,
+      displayName: nextForm.displayName.trim() || fallbackDisplayName(fingerprint),
+      team: nextForm.team,
+      provider: nextForm.provider,
+      period: nextForm.period,
+      topModel: nextForm.topModel,
       observedFrom: observedFrom.toISOString(),
       observedTo: observedTo.toISOString(),
-      tokens: toInteger(form.tokens),
-      requests: toInteger(form.requests),
-      spendUsd: toNumber(form.spendUsd),
-      artifactBytes: Math.round(toNumber(form.artifactMb) * 1_048_576),
-      linesChanged: toInteger(form.linesChanged),
-      sessions: toInteger(form.sessions),
-      source: form.source,
-      proofUrl: form.proofUrl
+      tokens: toInteger(nextForm.tokens),
+      requests: toInteger(nextForm.requests),
+      spendUsd: toNumber(nextForm.spendUsd),
+      artifactBytes: Math.round(toNumber(nextForm.artifactMb) * 1_048_576),
+      linesChanged: toInteger(nextForm.linesChanged),
+      sessions: toInteger(nextForm.sessions),
+      source: nextForm.source,
+      proofUrl: nextForm.proofUrl
     };
 
     try {
@@ -197,10 +267,13 @@ export function App() {
         return;
       }
 
-      setStatus("Снимок сохранён");
-      setWindowKey(form.period);
+      setWindowKey(nextForm.period);
       setProvider("all");
-      await refresh();
+      await refresh({
+        nextProvider: "all",
+        nextWindow: nextForm.period,
+        successStatus
+      });
     } catch {
       setStatus("Сеть не ответила");
     } finally {
@@ -220,18 +293,29 @@ export function App() {
             <h1>AI usage rating</h1>
           </div>
         </div>
-        <div className="fingerprint-pill" title="Публичный локальный отпечаток">
-          <Fingerprint size={18} aria-hidden="true" />
-          <span>{fingerprint ? short(fingerprint) : "создаётся"}</span>
+        <div className="top-actions">
           <button
-            className="icon-button"
+            className="measure-button"
             type="button"
-            title="Скопировать отпечаток"
-            aria-label="Скопировать отпечаток"
-            onClick={() => fingerprint && navigator.clipboard.writeText(fingerprint)}
+            onClick={handleQuickMeasure}
+            disabled={isLoading}
           >
-            <Clipboard size={16} aria-hidden="true" />
+            <Gauge size={17} aria-hidden="true" />
+            Замерить
           </button>
+          <div className="fingerprint-pill" title="Публичный локальный отпечаток">
+            <Fingerprint size={18} aria-hidden="true" />
+            <span>{fingerprint ? short(fingerprint) : "создаётся"}</span>
+            <button
+              className="icon-button"
+              type="button"
+              title="Скопировать отпечаток"
+              aria-label="Скопировать отпечаток"
+              onClick={() => fingerprint && navigator.clipboard.writeText(fingerprint)}
+            >
+              <Clipboard size={16} aria-hidden="true" />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -279,7 +363,7 @@ export function App() {
                   ))}
                 </select>
               </label>
-              <button className="icon-text-button" type="button" onClick={refresh} disabled={isLoading}>
+              <button className="icon-text-button" type="button" onClick={() => refresh()} disabled={isLoading}>
                 <RefreshCw size={16} aria-hidden="true" />
                 Обновить
               </button>
@@ -356,6 +440,27 @@ export function App() {
             <h2>Снимок</h2>
             <span>{status}</span>
           </div>
+
+          <div className="quick-import">
+            <label>
+              <span>быстрый импорт</span>
+              <textarea
+                value={quickText}
+                onChange={(event) => setQuickText(event.target.value)}
+                placeholder="30d spend $1,305,088.81 · 603B tokens · 7.6M requests · top model: gpt-5.5-2026-04-23"
+              />
+            </label>
+            <button
+              className="quick-button"
+              type="button"
+              onClick={() => saveParsedUsage(quickText)}
+              disabled={isLoading}
+            >
+              <ClipboardPaste size={17} aria-hidden="true" />
+              Распознать
+            </button>
+          </div>
+
           <form onSubmit={handleSubmit}>
             <label>
               <span>имя</span>
@@ -504,6 +609,179 @@ async function createFingerprint() {
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
+}
+
+function loadProfile(): Partial<FormState> | null {
+  try {
+    const raw = localStorage.getItem(profileStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<FormState>;
+    return {
+      displayName: parsed.displayName ?? "",
+      team: parsed.team ?? "",
+      provider: providers.includes(parsed.provider as Provider) ? parsed.provider : "codex",
+      topModel: parsed.topModel ?? "",
+      source: parsed.source ?? "manual"
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveProfile(form: FormState) {
+  localStorage.setItem(
+    profileStorageKey,
+    JSON.stringify({
+      displayName: form.displayName,
+      team: form.team,
+      provider: form.provider,
+      topModel: form.topModel,
+      source: form.source
+    })
+  );
+}
+
+function parseUsageText(text: string): Partial<FormState> {
+  const normalized = text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+  const lower = normalized.toLowerCase();
+  const parsed: Partial<FormState> = {
+    source: lower.includes("codexbar") ? "codexbar" : "import"
+  };
+
+  const provider = detectProvider(lower);
+  if (provider) parsed.provider = provider;
+
+  const period = detectPeriod(lower);
+  if (period) parsed.period = period;
+
+  const model = findModel(normalized);
+  if (model) parsed.topModel = model;
+
+  const spend = findMoney(normalized);
+  if (spend !== null) parsed.spendUsd = metricToInput(spend);
+
+  const tokens = findMetric(normalized, ["tokens?", "токен(?:ы|ов|а)?"]);
+  if (tokens !== null) parsed.tokens = metricToInput(tokens);
+
+  const requests = findMetric(normalized, ["requests?", "req", "запрос(?:ы|ов|а)?"]);
+  if (requests !== null) parsed.requests = metricToInput(requests);
+
+  const artifacts = findMetric(normalized, ["artifact(?:s)?\\s*(?:mb|мб)?", "артефакт(?:ы|ов|а)?"]);
+  if (artifacts !== null) parsed.artifactMb = metricToInput(artifacts);
+
+  const lines = findMetric(normalized, ["lines?", "строк(?:и|а)?"]);
+  if (lines !== null) parsed.linesChanged = metricToInput(lines);
+
+  const sessions = findMetric(normalized, ["sessions?", "сесси(?:и|й|я)"]);
+  if (sessions !== null) parsed.sessions = metricToInput(sessions);
+
+  return parsed;
+}
+
+function detectProvider(value: string): Provider | null {
+  if (value.includes("openai api") || value.includes("admin api")) return "openai-api";
+  if (value.includes("gemini")) return "gemini";
+  if (value.includes("grok") || value.includes("x.ai") || value.includes("xai")) return "grok";
+  if (value.includes("claude") || value.includes("anthropic")) return "claude";
+  if (value.includes("cursor")) return "cursor";
+  if (value.includes("zed") || value.includes("z.ai")) return "zed";
+  if (value.includes("codex")) return "codex";
+  return null;
+}
+
+function detectPeriod(value: string): WindowKey | null {
+  if (/\b(?:1h|hour|час)\b/.test(value)) return "hour";
+  if (/\b(?:today|24h|day|день|сутки)\b/.test(value)) return "day";
+  if (/\b(?:7d|week|недел)/.test(value)) return "week";
+  if (/\b(?:30d|month|месяц)\b/.test(value)) return "month";
+  if (/\b(?:all|total|lifetime)\b/.test(value)) return "all";
+  return null;
+}
+
+function findModel(value: string) {
+  const match = value.match(/(?:top\s*model|model|модель)\s*[:=]?\s*([a-z0-9][a-z0-9._:-]{2,80})/i);
+  return match?.[1];
+}
+
+function findMoney(value: string) {
+  const dollar = value.match(/\$\s*([0-9][0-9\s,]*(?:\.[0-9]+)?)/i);
+  if (dollar?.[1]) return parseDecimal(dollar[1]);
+
+  const spend = value.match(/(?:spend|cost)\s*[:=]?\s*\$?\s*([0-9][0-9\s,]*(?:\.[0-9]+)?)/i);
+  return spend?.[1] ? parseDecimal(spend[1]) : null;
+}
+
+function findMetric(value: string, labels: string[]) {
+  const label = labels.join("|");
+  const number = "([0-9][0-9\\s.,]*(?:k|m|b|t|bn|kb|mb|gb|tb|к|м|млн|млрд)?)";
+  const after = new RegExp(`(?:${label})\\s*[:=]?\\s*${number}`, "i");
+  const before = new RegExp(`${number}\\s*(?:${label})`, "i");
+  const afterMatch = value.match(after);
+  if (afterMatch?.[1]) return parseMagnitude(afterMatch[1]);
+
+  const beforeMatch = value.match(before);
+  return beforeMatch?.[1] ? parseMagnitude(beforeMatch[1]) : null;
+}
+
+function parseMagnitude(value: string) {
+  const raw = value.trim().toLowerCase().replace(/\s+/g, "");
+  const unitMatch = raw.match(/(млрд|млн|bn|tb|gb|mb|kb|[kmbtкм])$/i);
+  const unit = unitMatch?.[1] ?? "";
+  const number = parseDecimal(unit ? raw.slice(0, -unit.length) : raw);
+  const multipliers: Record<string, number> = {
+    k: 1_000,
+    "к": 1_000,
+    m: 1_000_000,
+    "м": 1_000_000,
+    млн: 1_000_000,
+    b: 1_000_000_000,
+    bn: 1_000_000_000,
+    млрд: 1_000_000_000,
+    t: 1_000_000_000_000,
+    kb: 1 / 1024,
+    mb: 1,
+    gb: 1024,
+    tb: 1024 * 1024
+  };
+
+  return number * (multipliers[unit] ?? 1);
+}
+
+function parseDecimal(value: string) {
+  const clean = value.trim().replace(/\s+/g, "");
+  if (clean.includes(".") && clean.includes(",")) {
+    return Number(clean.replaceAll(",", ""));
+  }
+
+  const commaCount = (clean.match(/,/g) ?? []).length;
+  if (commaCount > 1 || /\d+,\d{3}$/.test(clean)) {
+    return Number(clean.replaceAll(",", ""));
+  }
+
+  if (clean.includes(",")) {
+    return Number(clean.replace(",", "."));
+  }
+
+  return Number(clean.replaceAll(",", ""));
+}
+
+function hasAnyMetric(value: FormState) {
+  return (
+    toNumber(value.tokens) > 0 ||
+    toNumber(value.requests) > 0 ||
+    toNumber(value.spendUsd) > 0 ||
+    toNumber(value.artifactMb) > 0 ||
+    toNumber(value.linesChanged) > 0 ||
+    toNumber(value.sessions) > 0
+  );
+}
+
+function metricToInput(value: number) {
+  return Number.isFinite(value) && value > 0 ? String(Math.round(value * 100) / 100) : "";
+}
+
+function fallbackDisplayName(fingerprint: string) {
+  return fingerprint ? `anon-${fingerprint.slice(0, 6)}` : "anon";
 }
 
 function short(value: string) {

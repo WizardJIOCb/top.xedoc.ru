@@ -102,6 +102,14 @@ h2 {
   box-shadow: 0 16px 34px rgba(16, 19, 23, 0.06);
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
 .fingerprint-pill {
   display: flex;
   align-items: center;
@@ -121,6 +129,8 @@ h2 {
 
 .icon-button,
 .icon-text-button,
+.measure-button,
+.quick-button,
 .submit-button,
 .segmented button {
   border: 0;
@@ -255,6 +265,8 @@ select:focus {
 }
 
 .icon-text-button,
+.measure-button,
+.quick-button,
 .submit-button {
   display: inline-flex;
   align-items: center;
@@ -265,6 +277,11 @@ select:focus {
   color: #ffffff;
   background: #15171a;
   white-space: nowrap;
+}
+
+.measure-button {
+  min-height: 42px;
+  background: #f2545b;
 }
 
 .chart-panel {
@@ -398,6 +415,39 @@ td small {
   white-space: nowrap;
 }
 
+.quick-import {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf0f3;
+}
+
+textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  border: 1px solid #ccd5df;
+  border-radius: 8px;
+  padding: 10px 11px;
+  color: #15171a;
+  background: #ffffff;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+textarea:focus {
+  border-color: #18a999;
+  box-shadow: 0 0 0 3px rgba(24, 169, 153, 0.18);
+}
+
+.quick-button {
+  width: 100%;
+  min-height: 40px;
+  background: #344054;
+}
+
 form {
   display: grid;
   gap: 12px;
@@ -454,6 +504,7 @@ code {
   }
 
   .topbar,
+  .top-actions,
   .toolbar,
   .api-band {
     align-items: stretch;
